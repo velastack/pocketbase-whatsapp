@@ -116,9 +116,9 @@ GET {relayURL}/status → {"ok":true,"message":"...","sender":{...},"languages":
 
 ```sh
 go test ./...
-# against a local velabase checkout: create a go.work (gitignored) with
+# against a local PocketBase checkout: create a go.work (gitignored) with
 #   use .
-#   replace github.com/pocketbase/pocketbase => ../velabase
+#   replace github.com/pocketbase/pocketbase => ../pocketbase
 go run ./examples/base serve --dev
 ```
 
