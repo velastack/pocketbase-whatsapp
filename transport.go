@@ -108,6 +108,8 @@ func transportErrorCode(err error) string {
 // pickLanguage returns the best matching language from the supported list
 // (exact match, then same base language, then the first supported one).
 func pickLanguage(requested string, supported []string, fallback string) string {
+	requested = strings.ReplaceAll(strings.TrimSpace(requested), "-", "_")
+
 	if len(supported) == 0 {
 		if requested != "" {
 			return requested
@@ -115,7 +117,6 @@ func pickLanguage(requested string, supported []string, fallback string) string 
 		return fallback
 	}
 
-	requested = strings.ReplaceAll(strings.TrimSpace(requested), "-", "_")
 	if requested != "" {
 		for _, l := range supported {
 			if strings.EqualFold(l, requested) {

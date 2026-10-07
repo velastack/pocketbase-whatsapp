@@ -67,6 +67,7 @@ func TestDirectTransportErrors(t *testing.T) {
 		{`{"error":{"message":"Template name does not exist in the translation","code":132001}}`, ErrCodeTemplateUnavailable},
 		{`{"error":{"message":"Recipient phone number not in allowed list","code":131030}}`, ErrCodeRecipientNotAllowed},
 		{`{"error":{"message":"Rate limit hit","code":130429}}`, ErrCodeRateLimited},
+		{`{"error":{"message":"Invalid parameter","code":100}}`, ErrCodeUnavailable},
 		{`not json`, ErrCodeUnavailable},
 	}
 
@@ -97,7 +98,12 @@ func TestDirectTransportStatus(t *testing.T) {
 				t.Errorf("Unexpected template filter %q", r.URL.RawQuery)
 			}
 			w.Write([]byte(`{"data":[
-				{"name":"login_code","status":"APPROVED","language":"en_US","category":"AUTHENTICATION"},
+				{"name":"login_code","status":"APPROVED","language":"en_US","category":"AUTHENTICATION","components":[
+					{"type":"BUTTONS","buttons":[{"type":"URL","text":"Copy code","url":"https://www.whatsapp.com/otp/code/?otp_type=COPY_CODE&code=otp{{1}}"}]}
+				]},
+				{"name":"login_code","status":"APPROVED","language":"pt_BR","category":"AUTHENTICATION","components":[
+					{"type":"BUTTONS","buttons":[{"type":"URL","text":"Autofill","url":"https://www.whatsapp.com/otp/code/?otp_type=ONE_TAP&code=otp{{1}}"}]}
+				]},
 				{"name":"login_code","status":"PENDING","language":"es_MX","category":"AUTHENTICATION"}
 			]}`))
 		default:
@@ -112,9 +118,35 @@ func TestDirectTransportStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !status.OK || status.Sender.DisplayName != "Acme" || len(status.Languages) != 1 || status.Languages[0] != "en_US" {
+	if !status.OK || status.Sender.DisplayName != "Acme" || strings.Join(status.Languages, ",") != "en_US,pt_BR" {
 		t.Fatalf("Unexpected status %+v", status)
 	}
+	if !strings.Contains(status.Message, "pt_BR (ONE_TAP)") || strings.Contains(status.Message, "en_US") {
+		t.Fatalf("Expected the non copy code button to be flagged, got %q", status.Message)
+	}
+
+	// only the approved configured languages are reported
+	tr.Languages = []string{"es_MX", "en_US"}
+	status, _ = tr.Status(context.Background())
+	if !status.OK || strings.Join(status.Languages, ",") != "en_US" {
+		t.Fatalf("Unexpected status %+v", status)
+	}
+
+	// none of the configured languages is approved
+	tr.Languages = []string{"es_MX"}
+	status, _ = tr.Status(context.Background())
+	if status.OK || len(status.Languages) != 0 {
+		t.Fatalf("Expected not OK status without languages, got %+v", status)
+	}
+
+	// the configured languages are not reported when the templates can't be checked
+	tr.WABAID = ""
+	status, _ = tr.Status(context.Background())
+	if !status.OK || len(status.Languages) != 0 {
+		t.Fatalf("Expected OK status without languages, got %+v", status)
+	}
+	tr.WABAID = "999"
+	tr.Languages = nil
 
 	// no approved template
 	tr.TemplateName = "missing"

@@ -437,44 +437,60 @@ func (p *plugin) setupCollection(e *core.RequestEvent) error {
 		return e.InternalServerError("", err)
 	}
 
-	err = e.App.RunInTransaction(func(txApp core.App) error {
-		if form.CreatePhoneField {
-			name := "phone"
-			if collection.Fields.GetByName(name) == nil {
-				collection.Fields.Add(&core.TextField{
-					Name:    name,
-					Pattern: PhonePattern,
-					Max:     16,
-				})
-			}
-			if _, ok := dbutils.FindSingleColumnUniqueIndex(collection.Indexes, name); !ok {
-				collection.AddIndex("idx_"+security.PseudorandomString(10), true, "`"+name+"`", "`"+name+"` != ''")
-			}
-			cfg.PhoneField = name
+	// the collection is saved through the update request hooks (as with the core
+	// collections API) so that automigrate generates a migration for the changes
+	// (it is not wrapped in a transaction because automigrate reads the saved collection)
+	if form.CreatePhoneField {
+		name := "phone"
+		if collection.Fields.GetByName(name) == nil {
+			collection.Fields.Add(&core.TextField{
+				Name:    name,
+				Pattern: PhonePattern,
+				Max:     16,
+			})
 		}
+		if _, ok := dbutils.FindSingleColumnUniqueIndex(collection.Indexes, name); !ok {
+			collection.AddIndex("idx_"+security.PseudorandomString(10), true, "`"+name+"`", "`"+name+"` != ''")
+		}
+		cfg.PhoneField = name
+	}
 
-		if form.CreatePhoneVerifiedField {
-			name := "phoneVerified"
-			if collection.Fields.GetByName(name) == nil {
-				collection.Fields.Add(&core.BoolField{Name: name})
+	if form.CreatePhoneVerifiedField {
+		name := "phoneVerified"
+		if collection.Fields.GetByName(name) == nil {
+			collection.Fields.Add(&core.BoolField{Name: name})
+		}
+		cfg.PhoneVerifiedField = name
+	}
+
+	if form.MakeEmailOptional {
+		if email, ok := collection.Fields.GetByName(core.FieldNameEmail).(*core.EmailField); ok {
+			email.Required = false
+		}
+	}
+
+	event := new(core.CollectionRequestEvent)
+	event.RequestEvent = e
+	event.Collection = collection
+
+	err = e.App.OnCollectionUpdateRequest().Trigger(event, func(e *core.CollectionRequestEvent) error {
+		if err := e.App.Save(e.Collection); err != nil {
+			var validationErrors validation.Errors
+			if errors.As(err, &validationErrors) {
+				return e.BadRequestError("Failed to update the collection.", validationErrors)
 			}
-			cfg.PhoneVerifiedField = name
+			return e.BadRequestError("Failed to update the collection.", err)
 		}
-
-		if form.MakeEmailOptional {
-			if email, ok := collection.Fields.GetByName(core.FieldNameEmail).(*core.EmailField); ok {
-				email.Required = false
-			}
-		}
-
-		if err := txApp.Save(collection); err != nil {
-			return err
-		}
-
-		return p.saveCollectionConfig(txApp, collection.Id, cfg)
+		return nil
 	})
 	if err != nil {
-		return e.BadRequestError("Failed to update the collection.", err)
+		return err
+	}
+
+	// saved after the collection so that a failure doesn't prevent the migration
+	// (retrying is safe because the setup changes are idempotent)
+	if err := p.saveCollectionConfig(e.App, collection.Id, cfg); err != nil {
+		return e.BadRequestError("Failed to save the WhatsApp config.", err)
 	}
 
 	item, err := p.collectionItem(e.App, collection)

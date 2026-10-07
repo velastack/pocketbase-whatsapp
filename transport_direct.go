@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -27,7 +28,8 @@ type DirectTransport struct {
 	WABAID string
 
 	// AccessToken is a system user (or business integration) access token
-	// with the whatsapp_business_messaging permission.
+	// with the whatsapp_business_messaging and whatsapp_business_management
+	// permissions (the latter is used only for the template status checks).
 	AccessToken string
 
 	// TemplateName is the name of the approved authentication template.
@@ -124,7 +126,8 @@ func (t *DirectTransport) SendAuthCode(ctx context.Context, m AuthCode) (string,
 //
 // It checks the sender phone number and the configured template approval status.
 func (t *DirectTransport) Status(ctx context.Context) (*TransportStatus, error) {
-	status := &TransportStatus{Languages: t.Languages, Details: map[string]any{}}
+	// the languages are reported only when confirmed by the template status check
+	status := &TransportStatus{Details: map[string]any{}}
 
 	if t.PhoneNumberID == "" || t.AccessToken == "" || t.TemplateName == "" {
 		status.Message = "Phone number ID, access token and template name are required."
@@ -151,15 +154,23 @@ func (t *DirectTransport) Status(ctx context.Context) (*TransportStatus, error) 
 
 	templates := struct {
 		Data []struct {
-			Name     string `json:"name"`
-			Status   string `json:"status"`
-			Language string `json:"language"`
-			Category string `json:"category"`
+			Name       string `json:"name"`
+			Status     string `json:"status"`
+			Language   string `json:"language"`
+			Category   string `json:"category"`
+			Components []struct {
+				Type    string `json:"type"`
+				Buttons []struct {
+					Type    string `json:"type"`
+					OTPType string `json:"otp_type"`
+					URL     string `json:"url"`
+				} `json:"buttons"`
+			} `json:"components"`
 		} `json:"data"`
 	}{}
 	query := url.Values{}
 	query.Set("name", t.TemplateName)
-	query.Set("fields", "name,status,language,category")
+	query.Set("fields", "name,status,language,category,components")
 	query.Set("limit", "100")
 	if err := t.do(ctx, http.MethodGet, t.endpoint(t.WABAID, "message_templates")+"?"+query.Encode(), nil, &templates); err != nil {
 		status.Message = "Failed to load the message templates: " + err.Error()
@@ -167,14 +178,35 @@ func (t *DirectTransport) Status(ctx context.Context) (*TransportStatus, error) 
 	}
 
 	approved := []string{}
+	notCopyCode := []string{}
 	templateStatuses := map[string]string{}
 	for _, tpl := range templates.Data {
 		if tpl.Name != t.TemplateName {
 			continue
 		}
 		templateStatuses[tpl.Language] = tpl.Status
-		if tpl.Status == "APPROVED" && tpl.Category == "AUTHENTICATION" {
-			approved = append(approved, tpl.Language)
+		if tpl.Status != "APPROVED" || tpl.Category != "AUTHENTICATION" {
+			continue
+		}
+		approved = append(approved, tpl.Language)
+
+		// the send payload works only with a copy code button
+		// (Meta returns the OTP buttons as URL buttons with an otp_type query param)
+		for _, c := range tpl.Components {
+			if !strings.EqualFold(c.Type, "BUTTONS") {
+				continue
+			}
+			for _, b := range c.Buttons {
+				otpType := b.OTPType
+				if otpType == "" && b.URL != "" {
+					if u, err := url.Parse(b.URL); err == nil {
+						otpType = u.Query().Get("otp_type")
+					}
+				}
+				if otpType != "" && !strings.EqualFold(otpType, "COPY_CODE") {
+					notCopyCode = append(notCopyCode, fmt.Sprintf("%s (%s)", tpl.Language, otpType))
+				}
+			}
 		}
 	}
 	status.Details["templates"] = templateStatuses
@@ -184,11 +216,30 @@ func (t *DirectTransport) Status(ctx context.Context) (*TransportStatus, error) 
 		return status, nil
 	}
 
-	if len(t.Languages) == 0 {
-		status.Languages = approved
+	// the configured languages that Meta approved (all approved ones if none are configured)
+	status.Languages = approved
+	if len(t.Languages) > 0 {
+		status.Languages = []string{}
+		for _, l := range t.Languages {
+			if slices.ContainsFunc(approved, func(a string) bool { return strings.EqualFold(a, l) }) {
+				status.Languages = append(status.Languages, l)
+			}
+		}
+		if len(status.Languages) == 0 {
+			status.Message = fmt.Sprintf(
+				"None of the configured template languages (%s) is approved (approved: %s).",
+				strings.Join(t.Languages, ", "),
+				strings.Join(approved, ", "),
+			)
+			return status, nil
+		}
 	}
 
 	status.OK = true
+
+	if len(notCopyCode) > 0 {
+		status.Message = "The template button must be a copy code button, found: " + strings.Join(notCopyCode, ", ") + "."
+	}
 
 	return status, nil
 }
@@ -277,7 +328,8 @@ func graphErrorCode(code int) string {
 		return ErrCodeBudgetExceeded
 	case 131030:
 		return ErrCodeRecipientNotAllowed
-	case 131009, 131021, 131026, 100:
+	// (100 is not listed because Meta uses it for any invalid parameter, eg. a wrong WABA ID)
+	case 131009, 131021, 131026:
 		return ErrCodeInvalidPhone
 	case 132000, 132001, 132005, 132007, 132012, 132015, 132016:
 		return ErrCodeTemplateUnavailable
