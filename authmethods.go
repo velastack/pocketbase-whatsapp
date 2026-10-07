@@ -13,9 +13,10 @@ const authMethodsPattern = "GET /api/collections/{collection}/auth-methods"
 
 // authMethodsInfo is the "whatsapp" key appended to the auth-methods response.
 type authMethodsInfo struct {
-	Enabled    bool `json:"enabled"`
-	CodeLength int  `json:"codeLength"`
-	Duration   int  `json:"duration"`
+	Enabled     bool `json:"enabled"`
+	AllowSignup bool `json:"allowSignup"`
+	CodeLength  int  `json:"codeLength"`
+	Duration    int  `json:"duration"`
 }
 
 // authMethodsMiddleware appends a "whatsapp" key to the core
@@ -42,6 +43,7 @@ func (p *plugin) authMethodsMiddleware(e *core.RequestEvent) error {
 		transport, _ := p.transport(e.App)
 		info.Enabled = transport != nil
 	}
+	info.AllowSignup = info.Enabled && cfg.AllowSignup
 
 	original := e.Response
 	buffered := &bufferedResponseWriter{ResponseWriter: original}

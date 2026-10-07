@@ -20,9 +20,11 @@ Then open the superuser UI at **Settings > WhatsApp**. On that page you:
    |---|---|---|
    | Development | nothing | Codes go to the app logs. For local development only. |
    | VelaStack | a VelaStack API key | No Meta business verification needed. VelaStack sends from its shared verified number, or from your own number once you connect it in the VelaStack dashboard (Embedded Signup). Switching numbers needs no change here. |
-   | WhatsApp Cloud API (direct) | phone number ID, access token, approved AUTHENTICATION template name (WABA ID optional) | Meta grants the authentication template category only to verified businesses. |
+   | WhatsApp Cloud API (direct) | phone number ID, access token, approved AUTHENTICATION template name with a copy code button, WABA ID (recommended) | Meta grants the authentication template category only to verified businesses. Without the WABA ID the status check can't confirm the template is approved. |
 
-2. **Enable WhatsApp auth per auth collection.** Pick the phone field, which must be a text field with a UNIQUE index; the "Create phone field" button adds one with an E.164 pattern. Then choose whether new numbers can sign up, set the code length and lifetime, and optionally restrict country calling codes.
+   For the direct sender, create a system user in Meta Business Settings, assign it the Meta app and the WhatsApp account, then generate a token with the `whatsapp_business_messaging` and `whatsapp_business_management` permissions. Generate token lists no permissions until the app is assigned to the system user.
+
+2. **Enable WhatsApp auth per auth collection.** Pick the phone field, which must be a text field with a UNIQUE index; the "Create phone field" button adds one with an E.164 pattern (through the same hooks as the collections API, so automigrate writes a migration for it). Then choose whether new numbers can sign up, set the code length and lifetime, and optionally restrict country calling codes.
 
 The sender can also be set with env variables. These override the UI and show as "env" there. Hosted instances are provisioned this way.
 
@@ -53,7 +55,7 @@ pb.authStore.save(auth.token, auth.record);
 // auth.meta.isNew is true for signups
 ```
 
-`GET /api/collections/{collection}/auth-methods` includes `"whatsapp": {"enabled", "codeLength", "duration"}`.
+`GET /api/collections/{collection}/auth-methods` includes `"whatsapp": {"enabled", "allowSignup", "codeLength", "duration"}`. `allowSignup` is true only when WhatsApp auth is enabled and new numbers can sign up.
 
 | Endpoint | Body | Result |
 |---|---|---|

@@ -226,7 +226,14 @@ function pageWhatsAppSettings() {
 
         try {
             await app.pb.send(API + "/test", { method: "POST", body: { phone: data.testPhone } });
-            app.toasts.success("Test code sent to " + data.testPhone + ".");
+            if (data.mode == "dev") {
+                app.toasts.success("Test code for " + data.testPhone + " written to the app logs.");
+            } else {
+                app.toasts.success(
+                    "Test code for " + data.testPhone + " accepted for delivery. " +
+                        "Delivery failures are reported only through the WhatsApp webhooks, not here.",
+                );
+            }
         } catch (err) {
             app.toasts.error(err.message || "Failed to send the test code.");
         }
@@ -381,14 +388,14 @@ function pageWhatsAppSettings() {
                     t.div(
                         { className: "col-lg-6" },
                         textInput("direct.wabaId", "WhatsApp Business Account ID", {
-                            help: "Optional, used to check the template approval status.",
+                            help: "Recommended. Without it the template approval status can't be checked.",
                         }),
                     ),
                     t.div(
                         { className: "col-lg-12" },
                         textInput("direct.accessToken", "Access token", {
                             secret: true,
-                            help: "A system user token with the whatsapp_business_messaging permission.",
+                            help: "A system user token with the whatsapp_business_messaging and whatsapp_business_management permissions. Assign the Meta app to the system user first, otherwise Generate token lists no permissions.",
                         }),
                     ),
                     t.div(
@@ -492,9 +499,9 @@ function pageWhatsAppSettings() {
                     const sender = status.sender;
 
                     return t.div(
-                        { className: () => `alert ${status.ok ? "success" : "warning"}` },
+                        { className: () => `alert flex gap-sm ${status.ok ? "success" : "warning"}` },
                         t.div(
-                            { className: "content" },
+                            { className: "content flex-fill" },
                             t.p(null, t.strong(null, status.ok ? "Ready" : "Not ready"), " ", status.message || ""),
                             sender
                                 ? t.p(
@@ -508,13 +515,15 @@ function pageWhatsAppSettings() {
                                 )
                                 : undefined,
                             status.languages?.length
-                                ? t.p(null, "Languages: " + status.languages.join(", "))
+                                ? t.p(null, "Approved languages: " + status.languages.join(", "))
                                 : undefined,
                         ),
                         t.button(
                             {
                                 type: "button",
-                                className: () => `btn sm transparent ${data.isStatusLoading ? "loading" : ""}`,
+                                className: () =>
+                                    `btn sm secondary transparent circle m-l-auto ${data.isStatusLoading ? "loading" : ""}`,
+                                ariaLabel: app.attrs.tooltip("Refresh", "left"),
                                 onclick: loadStatus,
                             },
                             t.i({ className: "ri-refresh-line", ariaHidden: true }),
@@ -779,12 +788,12 @@ function collectionAccordion(initialItem) {
                 return t.div(
                     { className: "col-sm-12" },
                     t.div(
-                        { className: "alert warning" },
-                        t.div({ className: "content" }, issue),
+                        { className: "alert warning flex gap-sm" },
+                        t.div({ className: "content flex-fill" }, issue),
                         t.button(
                             {
                                 type: "button",
-                                className: () => `btn sm ${data.isSettingUp ? "loading" : ""}`,
+                                className: () => `btn sm m-l-auto ${data.isSettingUp ? "loading" : ""}`,
                                 onclick: () =>
                                     setup(
                                         {
@@ -812,15 +821,15 @@ function collectionAccordion(initialItem) {
 
                 if (data.item.diagnostics.emailRequired) {
                     notes.push(t.div(
-                        { className: "alert warning" },
+                        { className: "alert warning flex gap-sm" },
                         t.div(
-                            { className: "content" },
+                            { className: "content flex-fill" },
                             "Phone-only accounts have no email so the email field must be optional.",
                         ),
                         t.button(
                             {
                                 type: "button",
-                                className: () => `btn sm ${data.isSettingUp ? "loading" : ""}`,
+                                className: () => `btn sm m-l-auto ${data.isSettingUp ? "loading" : ""}`,
                                 onclick: () => setup({ makeEmailOptional: true }, "The email field is now optional."),
                             },
                             t.span({ className: "txt" }, "Make email optional"),

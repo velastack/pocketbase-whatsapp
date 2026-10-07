@@ -2,10 +2,13 @@ package whatsapp
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/plugins/migratecmd"
 )
 
 func TestAdminRequiresSuperuser(t *testing.T) {
@@ -147,6 +150,10 @@ func TestAdminCollections(t *testing.T) {
 		t.Fatalf("Expected 400 phone field error, got %d: %s", res.status, res.raw)
 	}
 
+	// the setup changes go through the collection update hooks (automigrate)
+	migrationsDir := t.TempDir()
+	migratecmd.MustRegister(env.app, nil, migratecmd.Config{Automigrate: true, Dir: migrationsDir})
+
 	// setup creates the phone field with a unique index and makes the email optional
 	res = env.do(http.MethodPost, "/api/whatsapp/collections/users/setup", map[string]any{
 		"createPhoneField":         true,
@@ -166,6 +173,14 @@ func TestAdminCollections(t *testing.T) {
 	}
 	if users.Fields.GetByName(core.FieldNameEmail).(*core.EmailField).Required {
 		t.Fatal("Expected email to be optional")
+	}
+
+	migrations, _ := filepath.Glob(filepath.Join(migrationsDir, "*_updated_users.go"))
+	if len(migrations) != 1 {
+		t.Fatalf("Expected 1 users migration, got %v", migrations)
+	}
+	if raw, _ := os.ReadFile(migrations[0]); !strings.Contains(string(raw), `"name": "phone"`) || !strings.Contains(string(raw), "UNIQUE INDEX") {
+		t.Fatalf("Expected the phone field and index in the migration:\n%s", raw)
 	}
 
 	// invalid values

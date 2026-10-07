@@ -67,6 +67,7 @@ func TestPickLanguage(t *testing.T) {
 	}{
 		{"", nil, "en_US"},
 		{"fr", nil, "fr"},
+		{"es-MX", nil, "es_MX"},
 		{"", supported, "en_US"},
 		{"es_MX", supported, "es_MX"},
 		{"es-mx", supported, "es_MX"},

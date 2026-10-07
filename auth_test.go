@@ -486,8 +486,19 @@ func TestAuthMethods(t *testing.T) {
 	}
 
 	wa, _ := res.body["whatsapp"].(map[string]any)
-	if wa["enabled"] != true || wa["codeLength"] != float64(6) || wa["duration"] != float64(300) {
+	if wa["enabled"] != true || wa["allowSignup"] != false || wa["codeLength"] != float64(6) || wa["duration"] != float64(300) {
 		t.Fatalf("Unexpected whatsapp auth methods info: %s", res.raw)
+	}
+
+	// signup enabled
+	res = env.do(http.MethodPatch, "/api/whatsapp/collections/members", map[string]any{"allowSignup": true}, env.superuserToken)
+	if res.status != http.StatusOK {
+		t.Fatalf("Expected 200, got %d: %s", res.status, res.raw)
+	}
+	res = env.do(http.MethodGet, "/api/collections/members/auth-methods", nil, "")
+	wa, _ = res.body["whatsapp"].(map[string]any)
+	if wa["enabled"] != true || wa["allowSignup"] != true {
+		t.Fatalf("Expected allowSignup, got %s", res.raw)
 	}
 
 	// the core keys are preserved
@@ -498,7 +509,7 @@ func TestAuthMethods(t *testing.T) {
 	// disabled collection
 	res = env.do(http.MethodGet, "/api/collections/users/auth-methods", nil, "")
 	wa, _ = res.body["whatsapp"].(map[string]any)
-	if res.status != http.StatusOK || wa["enabled"] != false {
+	if res.status != http.StatusOK || wa["enabled"] != false || wa["allowSignup"] != false {
 		t.Fatalf("Expected disabled whatsapp key, got %d: %s", res.status, res.raw)
 	}
 
