@@ -136,6 +136,54 @@ func TestAdminSettingsEnvAndEncryption(t *testing.T) {
 	}
 }
 
+func TestAdminSettingsModeInferredFromEnv(t *testing.T) {
+	env := newTestEnvWithoutFake(t, Config{}, nil)
+
+	// a stored sender that the env credentials take precedence over
+	p := &plugin{}
+	if err := p.saveStoreValue(env.app, storeKeySettings, &Settings{Mode: ModeDev}, true); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("VELASTACK_API_KEY", "envkey")
+
+	res := env.do(http.MethodGet, "/api/whatsapp/settings", nil, env.superuserToken)
+	if res.status != http.StatusOK {
+		t.Fatalf("Expected 200, got %d: %s", res.status, res.raw)
+	}
+	if !strings.Contains(res.raw, `"locked":["mode","velastack.apiKey"]`) || !strings.Contains(res.raw, `"mode":"velastack"`) {
+		t.Fatalf("Unexpected settings response: %s", res.raw)
+	}
+
+	tr, err := p.transport(env.app)
+	if _, ok := tr.(*RelayTransport); !ok || err != nil {
+		t.Fatalf("Expected relay transport, got %T (%v)", tr, err)
+	}
+
+	// an explicit mode wins over the inference
+	t.Setenv("WHATSAPP_MODE", ModeDev)
+	settings, locked, err := p.loadSettings(env.app)
+	if err != nil || settings.Mode != ModeDev || strings.Join(locked, ",") != "mode,velastack.apiKey" {
+		t.Fatalf("Unexpected settings %+v locked %v (%v)", settings, locked, err)
+	}
+
+	// the direct token implies the direct sender
+	os.Unsetenv("WHATSAPP_MODE")
+	os.Unsetenv("VELASTACK_API_KEY")
+	t.Setenv("WHATSAPP_ACCESS_TOKEN", "token")
+	settings, locked, err = p.loadSettings(env.app)
+	if err != nil || settings.Mode != ModeDirect || strings.Join(locked, ",") != "mode,direct.accessToken" {
+		t.Fatalf("Unexpected settings %+v locked %v (%v)", settings, locked, err)
+	}
+
+	// no env credentials: the stored sender stays
+	os.Unsetenv("WHATSAPP_ACCESS_TOKEN")
+	settings, locked, err = p.loadSettings(env.app)
+	if err != nil || settings.Mode != ModeDev || len(locked) != 0 {
+		t.Fatalf("Unexpected settings %+v locked %v (%v)", settings, locked, err)
+	}
+}
+
 func TestAdminCollections(t *testing.T) {
 	env := newTestEnv(t, Config{}, nil)
 

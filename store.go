@@ -79,6 +79,12 @@ var envOverrides = []struct {
 }
 
 // applyEnv applies the env overrides and returns the list with the locked fields.
+//
+// When the env provides a sender's credentials but no WHATSAPP_MODE, the mode
+// follows the credentials: VELASTACK_API_KEY selects the VelaStack relay and
+// WHATSAPP_ACCESS_TOKEN the direct Cloud API. A deployment then needs only the
+// secret in its environment. Without any env credentials the stored mode is
+// left alone, so a sender picked in the UI keeps working.
 func (s *Settings) applyEnv() []string {
 	locked := []string{}
 
@@ -89,7 +95,26 @@ func (s *Settings) applyEnv() []string {
 		}
 	}
 
+	if _, explicit := os.LookupEnv("WHATSAPP_MODE"); !explicit {
+		if mode := inferredMode(); mode != "" {
+			s.Mode = mode
+			locked = append([]string{"mode"}, locked...)
+		}
+	}
+
 	return locked
+}
+
+// inferredMode returns the mode implied by the sender credentials in the env
+// ("" when the env provides none).
+func inferredMode() string {
+	if v, ok := os.LookupEnv("VELASTACK_API_KEY"); ok && strings.TrimSpace(v) != "" {
+		return ModeVelastack
+	}
+	if v, ok := os.LookupEnv("WHATSAPP_ACCESS_TOKEN"); ok && strings.TrimSpace(v) != "" {
+		return ModeDirect
+	}
+	return ""
 }
 
 // redacted returns a copy of the settings with masked secrets.
