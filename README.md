@@ -26,7 +26,7 @@ Then open the superuser UI at **Settings > WhatsApp**. On that page you:
 
 2. **Enable WhatsApp auth per auth collection.** Pick the phone field, which must be a text field with a UNIQUE index; the "Create phone field" button adds one with an E.164 pattern (through the same hooks as the collections API, so automigrate writes a migration for it). Then choose whether new numbers can sign up, set the code length and lifetime, and optionally restrict country calling codes.
 
-The sender can also be set with env variables. These override the UI and show as "env" there. Hosted instances are provisioned this way.
+The sender can also be set with env variables. These override the UI and show as "env" there. Hosted instances are provisioned this way. When `WHATSAPP_MODE` is not set, the credentials pick the sender: `VELASTACK_API_KEY` selects VelaStack and `WHATSAPP_ACCESS_TOKEN` the direct Cloud API, so a deployment only needs the secret in its environment.
 
 ```
 WHATSAPP_MODE=dev|velastack|direct
