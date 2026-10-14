@@ -211,16 +211,15 @@ func (p *plugin) syncIncoming(app core.App) error {
 
 	default:
 		webhookURL := strings.TrimRight(app.Settings().Meta.AppURL, "/") + webhookPath
-		key := keyID(client.APIKey)
-		// a secret made for another key (project) is useless
-		rotate := state.Secret == "" || state.KeyID != key
-
+		// Always ask for a new secret: the plugin owns this URL, and the one it
+		// kept may be stale (another key, or rolled in the VelaStack
+		// dashboard). VelaStack re-reads the secret for each delivery attempt.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		info, err := client.putWebhook(ctx, webhookURL, rotate)
-		if err == nil && info.Secret == "" && rotate {
-			info, err = client.putWebhook(ctx, webhookURL, true)
+		info, err := client.putWebhook(ctx, webhookURL, true)
+		if err == nil && info.Secret == "" {
+			err = errors.New("VelaStack returned no signing secret")
 		}
 		if err != nil {
 			// keep receiving by polling until the webhook can be registered
@@ -228,10 +227,8 @@ func (p *plugin) syncIncoming(app core.App) error {
 			state.Error = "Couldn't register the webhook with VelaStack: " + err.Error()
 			break
 		}
-		if info.Secret != "" {
-			state.Secret = info.Secret
-			state.KeyID = key
-		}
+		state.Secret = info.Secret
+		state.KeyID = keyID(client.APIKey)
 		state.Mode = IncomingWebhook
 		state.WebhookURL = webhookURL
 	}
@@ -243,12 +240,16 @@ const pollPageSize = 100
 
 // pollOnce fetches the messages that arrived since the last poll, and
 // refreshes the statuses of recent inbox sends.
+//
+// It also runs, less often, when VelaStack delivers webhooks: a registered
+// URL can still be unreachable (eg. a proxy in front of PocketBase that
+// doesn't forward it), and both paths deduplicate by message id.
 func (p *plugin) pollOnce(app core.App) error {
 	p.incomingMu.Lock()
 	defer p.incomingMu.Unlock()
 
 	state, err := p.loadIncomingState(app)
-	if err != nil || state.Mode != IncomingPolling {
+	if err != nil || state.Mode == IncomingOff {
 		return err
 	}
 	client, err := p.velastack(app)

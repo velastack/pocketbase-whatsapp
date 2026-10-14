@@ -450,29 +450,70 @@ func TestInbox(t *testing.T) {
 	})
 }
 
-func TestIncomingNewKeyRotatesSecret(t *testing.T) {
+func TestIncomingSyncRotatesSecret(t *testing.T) {
 	env, fake := newIncomingEnv(t, "https://app.example.com")
 	first, _ := env.plugin.loadIncomingState(env.app)
 
-	// the same key keeps its secret
+	// eg. after "Roll secret" in the VelaStack dashboard, re-syncing (a
+	// restart or saving the settings) must get a secret that works again
+	fake.mu.Lock()
+	fake.secret = "whsec_rolled_elsewhere"
+	fake.mu.Unlock()
+
 	if err := env.plugin.syncIncoming(env.app); err != nil {
 		t.Fatal(err)
 	}
-	same, _ := env.plugin.loadIncomingState(env.app)
-	if same.Secret != first.Secret || fake.webhooks[1]["rotate"] == true {
-		t.Fatalf("Expected the secret kept, got %+v / %v", same, fake.webhooks[1])
+	synced, _ := env.plugin.loadIncomingState(env.app)
+	if synced.Secret == first.Secret || synced.Secret != fake.secret || fake.webhooks[1]["rotate"] != true {
+		t.Fatalf("Expected a fresh secret from VelaStack, got %+v (fake %q)", synced, fake.secret)
 	}
 
-	// a lost secret is rotated
-	same.Secret = ""
-	if err := env.plugin.saveIncomingState(env.app, same); err != nil {
+	if res := env.postEvent(fake.secret, receivedEvent("evt_1", "wamid.IN1", testContactPhone, "Hola")); res.status != http.StatusNoContent {
+		t.Fatalf("Expected the new secret to verify, got %d", res.status)
+	}
+}
+
+func TestIncomingCollectionsProtected(t *testing.T) {
+	env := newTestEnv(t, Config{}, nil)
+
+	contacts, err := env.app.FindCollectionByNameOrId(CollectionNameContacts)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := env.plugin.syncIncoming(env.app); err != nil {
+
+	// apps can open them up
+	res := env.do(http.MethodPatch, "/api/collections/"+contacts.Id, map[string]any{"listRule": "@request.auth.id != ''"}, env.superuserToken)
+	if res.status != http.StatusOK {
+		t.Fatalf("Expected the rule change to save, got %d: %s", res.status, res.raw)
+	}
+
+	// but not rename or delete them
+	if res := env.do(http.MethodPatch, "/api/collections/"+contacts.Id, map[string]any{"name": "contacts"}, env.superuserToken); res.status != http.StatusBadRequest {
+		t.Fatalf("Expected the rename to fail, got %d", res.status)
+	}
+	if res := env.do(http.MethodDelete, "/api/collections/"+CollectionNameMessages, nil, env.superuserToken); res.status != http.StatusBadRequest {
+		t.Fatalf("Expected the delete to fail, got %d", res.status)
+	}
+	if _, err := env.app.FindCollectionByNameOrId(CollectionNameMessages); err != nil {
+		t.Fatal("Expected the messages collection to still exist")
+	}
+}
+
+func TestIncomingWebhookModeStillPolls(t *testing.T) {
+	env, fake := newIncomingEnv(t, "https://app.example.com")
+
+	// a message the webhook never delivered (eg. a proxy dropped it)
+	fake.inbound = []map[string]any{
+		{"messageId": "wamid.MISSED", "from": "447700900123", "type": "text", "text": "Hello?"},
+	}
+	if err := env.plugin.pollOnce(env.app); err != nil {
 		t.Fatal(err)
 	}
-	rotated, _ := env.plugin.loadIncomingState(env.app)
-	if rotated.Secret == "" || rotated.Secret == first.Secret {
-		t.Fatalf("Expected a new secret, got %+v", rotated)
+	// ...and one that arrives both ways is stored once
+	env.postEvent(fake.secret, receivedEvent("evt_1", "wamid.MISSED", testContactPhone, "Hello?"))
+
+	messages, _ := env.app.FindAllRecords(CollectionNameMessages)
+	if len(messages) != 1 {
+		t.Fatalf("Expected 1 message, got %d", len(messages))
 	}
 }

@@ -141,6 +141,7 @@ func register(app core.App, config Config) (*plugin, error) {
 	app.OnRecordUpdateRequest().BindFunc(p.guardPhoneFields)
 
 	p.protectStore()
+	p.protectIncoming()
 
 	// cleanup the related plugin data
 	app.OnCollectionAfterDeleteSuccess().BindFunc(func(e *core.CollectionEvent) error {
@@ -198,6 +199,18 @@ func (p *plugin) bindRoutes(se *core.ServeEvent) {
 	admin.POST("/inbox/{contact}/read", p.inboxRead)
 }
 
+// webhookPollEvery is how many poll intervals pass between the safety-net
+// polls while VelaStack delivers webhooks.
+const webhookPollEvery = 6
+
+func (p *plugin) incomingMode(app core.App) string {
+	state, err := p.loadIncomingState(app)
+	if err != nil {
+		return IncomingOff
+	}
+	return state.Mode
+}
+
 // startIncoming registers the webhook (or picks polling) and starts the
 // poller, which only fetches while VelaStack can't deliver webhooks.
 func (p *plugin) startIncoming(app core.App) {
@@ -216,11 +229,17 @@ func (p *plugin) startIncoming(app core.App) {
 	})
 
 	go func() {
+		tick := 0
 		for {
 			select {
 			case <-done:
 				return
 			case <-ticker.C:
+				// with webhooks, only a slow safety net (see pollOnce)
+				tick++
+				if p.incomingMode(app) == IncomingWebhook && tick%webhookPollEvery != 0 {
+					continue
+				}
 				// waits, so polls never overlap
 				var wg sync.WaitGroup
 				routine.FireAndForget(func() {

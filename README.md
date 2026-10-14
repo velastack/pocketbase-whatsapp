@@ -96,9 +96,10 @@ Incoming messages need the VelaStack sender. The project behind the key must sen
 **How they arrive:**
 - **Webhook:** when the app URL (Settings > Application) is public https, the plugin registers `{appURL}/api/whatsapp/webhook` with VelaStack. It does this at startup and whenever the WhatsApp settings are saved, and keeps the signing secret encrypted in `_whatsapp`. Events are signed `X-VelaStack-Signature: t=…,v1=…` (HMAC-SHA256 of `t.body`, 5 minutes tolerance) and deduplicated by event id, so VelaStack's retries are safe.
 - **Polling:** otherwise (localhost, a private address), the plugin polls VelaStack's message listing every 10 seconds (`Config.PollInterval`). It also refreshes the delivery status of recent inbox replies.
+- **Safety-net polling:** with a webhook registered, the plugin still polls once a minute, in case the URL isn't actually reachable (eg. a proxy in front of PocketBase that doesn't forward `/api/whatsapp/webhook`). Messages are deduplicated, so nothing arrives twice.
 - **One key per instance:** each instance needs its own project key. Another public instance using the same key takes the webhook over.
 
-**Storage.** Both collections are created by the plugin and have no API rules, so only superusers can read them until you open them up:
+**Storage.** Both collections are created by the plugin with no API rules, so only superusers can read them until you add rules. You can add rules and fields, but you can't remove the plugin's fields or rename or delete the collections:
 
 | Collection | Holds |
 |---|---|

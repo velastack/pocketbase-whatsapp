@@ -85,8 +85,10 @@ func (p *plugin) saveIncomingState(app core.App, s *incomingState) error {
 // -------------------------------------------------------------------
 
 func migrateIncomingUp(txApp core.App) error {
+	// Not system collections, so apps can set API rules (PocketBase locks the
+	// rules of system ones); the fields are, and protectIncoming stops the
+	// collections from being deleted or renamed.
 	contacts := core.NewBaseCollection(CollectionNameContacts)
-	contacts.System = true
 	contacts.Fields.Add(
 		&core.TextField{Name: "phone", System: true, Required: true, Max: 16},
 		&core.TextField{Name: "name", System: true, Max: 255},
@@ -107,7 +109,6 @@ func migrateIncomingUp(txApp core.App) error {
 	}
 
 	messages := core.NewBaseCollection(CollectionNameMessages)
-	messages.System = true
 	messages.Fields.Add(
 		&core.RelationField{Name: "contact", System: true, Required: true, CollectionId: contacts.Id, MaxSelect: 1, CascadeDelete: true},
 		&core.SelectField{Name: "direction", System: true, Required: true, Values: []string{"in", "out"}, MaxSelect: 1},

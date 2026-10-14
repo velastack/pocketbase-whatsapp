@@ -54,3 +54,30 @@ func (p *plugin) isStoreTopic(app core.App, topic string) bool {
 
 	return strings.HasPrefix(topic, collection.Id+"/")
 }
+
+// protectIncoming stops the incoming messages collections from being deleted
+// or renamed through the collections API. They are regular collections, so
+// that apps can open them up with API rules.
+func (p *plugin) protectIncoming() {
+	protected := func(app core.App, id string) (*core.Collection, bool) {
+		original, err := app.FindCollectionByNameOrId(id)
+		if err != nil {
+			return nil, false
+		}
+		return original, original.Name == CollectionNameContacts || original.Name == CollectionNameMessages
+	}
+
+	p.app.OnCollectionDeleteRequest().BindFunc(func(e *core.CollectionRequestEvent) error {
+		if _, ok := protected(e.App, e.Collection.Id); ok {
+			return e.BadRequestError("The "+e.Collection.Name+" collection is managed by the WhatsApp plugin and can't be deleted.", nil)
+		}
+		return e.Next()
+	})
+
+	p.app.OnCollectionUpdateRequest().BindFunc(func(e *core.CollectionRequestEvent) error {
+		if original, ok := protected(e.App, e.Collection.Id); ok && original.Name != e.Collection.Name {
+			return e.BadRequestError("The "+original.Name+" collection is managed by the WhatsApp plugin and can't be renamed.", nil)
+		}
+		return e.Next()
+	})
+}
