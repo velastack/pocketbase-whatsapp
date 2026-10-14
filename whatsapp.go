@@ -16,18 +16,23 @@
 //	POST /api/collections/{collection}/auth-with-whatsapp       {otpId, password, mfaId?} → auth response
 //	POST /api/collections/{collection}/request-whatsapp-phone-change  {newPhone, lang?} → {otpId} (auth required)
 //	POST /api/collections/{collection}/confirm-whatsapp-phone-change  {otpId, password} → 204 (auth required)
+//
+// With the VelaStack sender it also receives the messages sent to the
+// number (see incoming.go) and adds an "Inbox" dashboard page.
 package whatsapp
 
 import (
 	"embed"
 	"io/fs"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/hook"
+	"github.com/pocketbase/pocketbase/tools/routine"
 )
 
 //go:embed all:ui
@@ -47,12 +52,20 @@ type Config struct {
 
 	// Limits are the abuse and cost protection limits.
 	Limits Limits
+
+	// PollInterval is how often incoming messages are fetched from VelaStack
+	// when the app url isn't public https, so VelaStack can't deliver
+	// webhooks (default to 10s).
+	PollInterval time.Duration
 }
 
 type plugin struct {
 	app     core.App
 	config  Config
 	limiter *windowLimiter
+
+	// incomingMu serializes the webhook registration and the polling.
+	incomingMu sync.Mutex
 }
 
 // MustRegister registers the whatsapp plugin in the provided app instance
@@ -65,7 +78,15 @@ func MustRegister(app core.App, config Config) {
 
 // Register registers the whatsapp plugin in the provided app instance.
 func Register(app core.App, config Config) error {
+	_, err := register(app, config)
+	return err
+}
+
+func register(app core.App, config Config) (*plugin, error) {
 	config.Limits.setDefaults()
+	if config.PollInterval <= 0 {
+		config.PollInterval = 10 * time.Second
+	}
 	if config.HTTPClient == nil {
 		config.HTTPClient = &http.Client{Timeout: 30 * time.Second}
 	}
@@ -82,19 +103,23 @@ func Register(app core.App, config Config) error {
 	// in case the plugin is registered after that (eg. in tests)
 	if app.IsBootstrapped() {
 		if err := app.RunSystemMigrations(); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	uiExt, err := fs.Sub(uiFS, "ui")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	app.OnServe().BindFunc(func(se *core.ServeEvent) error {
 		se.UIExtensions = append(se.UIExtensions, core.UIExtension{Name: "whatsapp", FS: uiExt})
 		p.bindRoutes(se)
-		return se.Next()
+		if err := se.Next(); err != nil {
+			return err
+		}
+		p.startIncoming(se.App)
+		return nil
 	})
 
 	app.OnBootstrap().BindFunc(func(e *core.BootstrapEvent) error {
@@ -138,7 +163,7 @@ func Register(app core.App, config Config) error {
 		return e.Next()
 	})
 
-	return nil
+	return p, nil
 }
 
 func (p *plugin) bindRoutes(se *core.ServeEvent) {
@@ -162,6 +187,51 @@ func (p *plugin) bindRoutes(se *core.ServeEvent) {
 	admin.GET("/collections", p.listCollections)
 	admin.PATCH("/collections/{collection}", p.updateCollectionConfig)
 	admin.POST("/collections/{collection}/setup", p.setupCollection)
+
+	se.Router.POST(webhookPath, p.receiveWebhook)
+
+	admin.GET("/inbox", p.inboxContacts).Bind(apis.SkipSuccessActivityLog())
+	admin.GET("/inbox/templates", p.inboxTemplates)
+	admin.GET("/inbox/media/{media}", p.inboxMedia)
+	admin.GET("/inbox/{contact}", p.inboxThread).Bind(apis.SkipSuccessActivityLog())
+	admin.POST("/inbox/{contact}", p.inboxSend)
+	admin.POST("/inbox/{contact}/read", p.inboxRead)
+}
+
+// startIncoming registers the webhook (or picks polling) and starts the
+// poller, which only fetches while VelaStack can't deliver webhooks.
+func (p *plugin) startIncoming(app core.App) {
+	asyncSend(func() {
+		if err := p.syncIncoming(app); err != nil {
+			app.Logger().Warn("Failed to set up incoming WhatsApp messages", "error", err)
+		}
+	})
+
+	ticker := time.NewTicker(p.config.PollInterval)
+	done := make(chan struct{})
+	app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
+		ticker.Stop()
+		close(done)
+		return e.Next()
+	})
+
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				// waits, so polls never overlap
+				var wg sync.WaitGroup
+				routine.FireAndForget(func() {
+					if err := p.pollOnce(app); err != nil {
+						app.Logger().Debug("Failed to poll incoming WhatsApp messages", "error", err)
+					}
+				}, &wg)
+				wg.Wait()
+			}
+		}
+	}()
 }
 
 // transport returns the active code delivery transport

@@ -4,6 +4,8 @@ WhatsApp one-time code login for [PocketBase](https://pocketbase.io), next to pa
 
 Users enter their phone number and get a code from an approved WhatsApp **authentication template** (copy code button, with iOS keyboard autofill). The plugin uses only public PocketBase APIs, so it works with vanilla PocketBase (v0.40.4+) as well as [velabase](https://github.com/velastack/velabase).
 
+With the VelaStack sender it also **receives** the messages people send to your WhatsApp number, stores them in PocketBase and adds an **Inbox** page to the dashboard (see [Incoming messages](#incoming-messages)).
+
 ## Install
 
 ```go
@@ -87,6 +89,45 @@ pb.authStore.save(auth.token, auth.record);
   Configure them with `Config.Limits`.
 - **Storage:** challenges live in `_whatsappOtps` (hashed codes). An hourly job deletes challenges older than 1 hour; codes stop working after their own duration either way. Settings live in `_whatsapp`, which is blocked from the records and realtime APIs.
 
+## Incoming messages
+
+Incoming messages need the VelaStack sender. The project behind the key must send from your own WhatsApp number, connected in the VelaStack dashboard. Direct mode stays sign-in codes only.
+
+**How they arrive:**
+- **Webhook:** when the app URL (Settings > Application) is public https, the plugin registers `{appURL}/api/whatsapp/webhook` with VelaStack. It does this at startup and whenever the WhatsApp settings are saved, and keeps the signing secret encrypted in `_whatsapp`. Events are signed `X-VelaStack-Signature: t=…,v1=…` (HMAC-SHA256 of `t.body`, 5 minutes tolerance) and deduplicated by event id, so VelaStack's retries are safe.
+- **Polling:** otherwise (localhost, a private address), the plugin polls VelaStack's message listing every 10 seconds (`Config.PollInterval`). It also refreshes the delivery status of recent inbox replies.
+- **One key per instance:** each instance needs its own project key. Another public instance using the same key takes the webhook over.
+
+**Storage.** Both collections are created by the plugin and have no API rules, so only superusers can read them until you open them up:
+
+| Collection | Holds |
+|---|---|
+| `_whatsappContacts` | `phone` (E.164), `name` (WhatsApp profile name, webhook only), `lastInbound` (the 24-hour reply window starts here), `lastMessage`, `unread`, and `userCollection`/`user` when the number matches an auth record with WhatsApp auth enabled (and the phone verified, if that field is set) |
+| `_whatsappMessages` | `contact`, `direction` (`in`/`out`), `messageId` (wamid), `type`, `text`, `template`, `mediaId`/`mediaMime`/`mediaName`, `replyTo`, `status`, `error`, `raw` (Meta's message), `sentAt` |
+
+React to new messages with the usual record hooks:
+
+```go
+app.OnRecordAfterCreateSuccess(whatsapp.CollectionNameMessages).BindFunc(func(e *core.RecordEvent) error {
+    if e.Record.GetString("direction") == "in" {
+        // auto-reply, create a lead, hand it to an agent...
+    }
+    return e.Next()
+})
+```
+
+Notes:
+- **Media** isn't stored. It's fetched from Meta through VelaStack when someone opens it, and VelaStack keeps messages for 30 days, so older attachments can no longer be opened.
+- **Linking contacts to users:** WhatsApp identifies people by the number Meta has for them. That can differ from the number a user typed (eg. old Mexican `+521` numbers), in which case the contact isn't linked.
+
+**Inbox.** The superuser dashboard gets an **Inbox** page. It's meant for checking what the plugin stores, not as a customer-service tool for business owners.
+- **Conversation list:** unread counts and a dot while the 24-hour reply window is open.
+- **Thread:** text, images and documents, plus quoted replies and delivery statuses.
+- **Reply box:** sends free text while the window is open, or an approved template at any time.
+- **Read receipts:** opening a conversation marks it read for the customer (blue ticks).
+
+The superuser API behind it: `GET /api/whatsapp/inbox`, `GET|POST /api/whatsapp/inbox/{contact}`, `POST /api/whatsapp/inbox/{contact}/read`, `GET /api/whatsapp/inbox/templates`, `GET /api/whatsapp/inbox/media/{mediaId}`.
+
 ## Custom transports
 
 `Config.Transport` replaces the UI-configured sender, e.g. to use another provider or add an SMS fallback:
@@ -118,6 +159,7 @@ GET {relayURL}/status → {"ok":true,"message":"...","sender":{...},"languages":
 
 ```sh
 go test ./...
+npm install && npm run build   # after changing web/ (the built ui/ is committed)
 # against a local PocketBase checkout: create a go.work (gitignored) with
 #   use .
 #   replace github.com/pocketbase/pocketbase => ../pocketbase

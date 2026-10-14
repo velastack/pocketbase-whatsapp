@@ -21,6 +21,7 @@ var registerMigrationsOnce sync.Once
 func registerMigrations() {
 	registerMigrationsOnce.Do(func() {
 		core.SystemMigrations.Register(migrateUp, migrateDown, "1791000000_whatsapp_init.go")
+		core.SystemMigrations.Register(migrateIncomingUp, migrateIncomingDown, "1791000001_whatsapp_incoming.go")
 	})
 }
 
