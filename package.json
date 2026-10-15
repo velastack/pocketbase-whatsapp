@@ -1,0 +1,11 @@
+{
+  "name": "pocketbase-whatsapp-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild web/main.js --bundle --format=iife --target=es2022 --outfile=ui/main.js && cp web/inbox.css ui/inbox.css"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

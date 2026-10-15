@@ -62,6 +62,7 @@ type testEnv struct {
 	app            *tests.TestApp
 	handler        http.Handler
 	transport      *fakeTransport
+	plugin         *plugin
 	superuserToken string
 	members        *core.Collection
 	member         *core.Record
@@ -106,7 +107,8 @@ func newTestEnvOpts(t *testing.T, config Config, cfg *CollectionConfig, withFake
 		env.transport = ft
 	}
 
-	if err := Register(app, config); err != nil {
+	env.plugin, err = register(app, config)
+	if err != nil {
 		t.Fatal(err)
 	}
 

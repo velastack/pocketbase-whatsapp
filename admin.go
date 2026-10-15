@@ -93,6 +93,11 @@ func (p *plugin) updateSettings(e *core.RequestEvent) error {
 		return e.BadRequestError("Failed to save the WhatsApp settings.", err)
 	}
 
+	// a new key or sender changes how messages arrive
+	if err := p.syncIncoming(e.App); err != nil {
+		e.App.Logger().Warn("Failed to set up incoming WhatsApp messages", "error", err)
+	}
+
 	return p.getSettings(e)
 }
 
