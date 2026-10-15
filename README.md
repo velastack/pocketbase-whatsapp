@@ -103,14 +103,15 @@ Incoming messages need the VelaStack sender. The project behind the key must sen
 
 | Collection | Holds |
 |---|---|
-| `_whatsappContacts` | `phone` (E.164), `name` (WhatsApp profile name, webhook only), `lastInbound` (the 24-hour reply window starts here), `lastMessage`, `unread`, and `userCollection`/`user` when the number matches an auth record with WhatsApp auth enabled (and the phone verified, if that field is set) |
-| `_whatsappMessages` | `contact`, `direction` (`in`/`out`), `messageId` (wamid), `type`, `text`, `template`, `mediaId`/`mediaMime`/`mediaName`, `replyTo`, `status`, `error`, `raw` (Meta's message), `sentAt` |
+| `_whatsappContacts` | `phone` (E.164), `name` (WhatsApp profile name, webhook only), `savedName`/`savedRemoved` (the WhatsApp Business app's address book, see below), `lastInbound` (the 24-hour reply window starts here), `lastMessage`, `unread`, and `userCollection`/`user` when the number matches an auth record with WhatsApp auth enabled (and the phone verified, if that field is set) |
+| `_whatsappMessages` | `contact`, `direction` (`in`/`out`), `origin` (empty, `app` or `history`, see below), `messageId` (wamid), `type`, `text`, `template`, `mediaId`/`mediaMime`/`mediaName`, `replyTo`, `status`, `error`, `raw` (Meta's message), `sentAt` |
 
 React to new messages with the usual record hooks:
 
 ```go
 app.OnRecordAfterCreateSuccess(whatsapp.CollectionNameMessages).BindFunc(func(e *core.RecordEvent) error {
-    if e.Record.GetString("direction") == "in" {
+    // origin is empty for live messages; skip the synced chat history
+    if e.Record.GetString("direction") == "in" && e.Record.GetString("origin") == "" {
         // auto-reply, create a lead, hand it to an agent...
     }
     return e.Next()
@@ -121,9 +122,16 @@ Notes:
 - **Media** isn't stored. It's fetched from Meta through VelaStack when someone opens it, and VelaStack keeps messages for 30 days, so older attachments can no longer be opened.
 - **Linking contacts to users:** WhatsApp identifies people by the number Meta has for them. That can differ from the number a user typed (eg. old Mexican `+521` numbers), in which case the contact isn't linked.
 
+**WhatsApp Business app numbers (coexistence).** A number connected in VelaStack with "Use my WhatsApp Business app number" stays in the app on the owner's phone. The plugin then also stores:
+- **The owner's replies from the app** as outgoing messages with `origin: "app"`. They clear the contact's unread count (the owner has answered) and never open the reply window. A bot should treat one as "the owner is handling this".
+- **The chat history** Meta syncs once after onboarding, as `origin: "history"` (VelaStack keeps the last 30 days). History is neither unread nor a reason to think the window is open, so the Inbox offers templates for those threads until the customer writes again.
+- **The address book** as the contact's `savedName`. A contact the owner deletes keeps its messages, with `savedRemoved` set.
+
+These arrive as the `message.echo`, `message.history` and `contact.sync` webhook events, or through `GET {relay}/messages?conversation=1` and `GET {relay}/contacts` when polling. After upgrading, the first poll lists the conversation from the start; message ids dedupe what was already stored.
+
 **Inbox.** The superuser dashboard gets an **Inbox** page. It's meant for checking what the plugin stores, not as a customer-service tool for business owners.
 - **Conversation list:** unread counts and a dot while the 24-hour reply window is open.
-- **Thread:** text, images and documents, plus quoted replies and delivery statuses.
+- **Thread:** text, images and documents, plus quoted replies and delivery statuses. On a WhatsApp Business app number, replies sent from the app have a phone icon and the imported history is set apart. Names saved in the app come first.
 - **Reply box:** sends free text while the window is open, or an approved template at any time.
 - **Read receipts:** opening a conversation marks it read for the customer (blue ticks).
 

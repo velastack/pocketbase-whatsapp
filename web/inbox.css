@@ -200,3 +200,13 @@
         display: inline-flex;
     }
 }
+
+/* coexistence: the chat history synced from the WhatsApp Business app */
+.page-whatsapp-inbox .wa-history {
+    opacity: 0.75;
+}
+.page-whatsapp-inbox .wa-divider {
+    align-self: center;
+    margin: 8px 0;
+    font-size: var(--smFontSize);
+}

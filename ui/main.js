@@ -948,6 +948,25 @@
   var API2 = "/api/whatsapp/inbox";
   var POLL_INTERVAL = 5e3;
   var CONTACT_QUERY_KEY = "contact";
+  function displayName(c) {
+    return c.savedName || c.name || c.phone;
+  }
+  function otherName(c) {
+    return c.savedName && c.name && c.name != c.savedName ? c.name : "";
+  }
+  function bizAppNotice(incoming) {
+    if (!incoming?.onBizApp) {
+      return "";
+    }
+    let text = "This number is also used in the WhatsApp Business app. Replies sent there show up here.";
+    const history = incoming.history;
+    if (history?.error == "declined") {
+      text += " The chat history wasn't shared from the app.";
+    } else if (history && history.progress < 100) {
+      text += ` Importing the chat history (${history.progress}%).`;
+    }
+    return text;
+  }
   var INCOMING_HINTS = {
     webhook: "VelaStack delivers new messages to this app's webhook.",
     polling: "This app isn't reachable over public https, so new messages are fetched from VelaStack every few seconds.",
@@ -1140,6 +1159,11 @@
           )
         ),
         () => data.incoming && !data.incoming.mode ? t.div({ className: "alert warning m-b-sm" }, t.div({ className: "content" }, INCOMING_HINTS[""])) : data.incoming?.error ? t.div({ className: "alert warning m-b-sm" }, t.div({ className: "content" }, data.incoming.error)) : t.span({}),
+        () => bizAppNotice(data.incoming) ? t.div(
+          { className: "alert info m-b-sm" },
+          t.div({ className: "icon" }, t.i({ className: "ri-smartphone-line" })),
+          t.div({ className: "content" }, bizAppNotice(data.incoming))
+        ) : t.span({}),
         t.div(
           { className: () => "wa-inbox " + (data.activeId ? "wa-inbox-thread-open" : "") },
           contactList(),
@@ -1166,7 +1190,7 @@
               },
               t.div(
                 { className: "wa-contact-top" },
-                t.span({ className: "wa-contact-name" }, c.name || c.phone),
+                t.span({ className: "wa-contact-name" }, displayName(c)),
                 t.span({ className: "wa-contact-time txt-hint" }, shortTime(c.lastMessageAt))
               ),
               t.div(
@@ -1200,8 +1224,9 @@
             ),
             t.div(
               { className: "flex-fill" },
-              t.strong(null, contact.name || contact.phone),
-              contact.name ? t.span({ className: "txt-hint m-l-5" }, contact.phone) : void 0,
+              t.strong(null, displayName(contact)),
+              otherName(contact) ? t.span({ className: "txt-hint m-l-5" }, "~" + otherName(contact)) : void 0,
+              displayName(contact) != contact.phone ? t.span({ className: "txt-hint m-l-5" }, contact.phone) : void 0,
               contact.user && contact.userCollection ? t.a(
                 {
                   className: "link-hint m-l-10",
@@ -1227,7 +1252,19 @@
               return t.p({ className: "wa-empty txt-hint" }, data.threadLoading ? "Loading..." : "");
             }
             const byMessageId = new Map(data.thread.messages.map((m) => [m.messageId, m]));
-            return data.thread.messages.map((m) => messageBubble(m, byMessageId));
+            const items = [];
+            let inHistory = false;
+            for (const m of data.thread.messages) {
+              const isHistory = m.origin == "history";
+              if (isHistory && !inHistory) {
+                items.push(t.div({ className: "wa-divider txt-hint" }, "Imported from the WhatsApp Business app"));
+              } else if (!isHistory && inHistory) {
+                items.push(t.div({ className: "wa-divider txt-hint" }, "Since connecting"));
+              }
+              inHistory = isHistory;
+              items.push(messageBubble(m, byMessageId));
+            }
+            return items;
           }),
           replyBox(contact)
         ];
@@ -1236,13 +1273,17 @@
     function messageBubble(m, byMessageId) {
       const quoted = m.replyTo ? byMessageId.get(m.replyTo) : null;
       return t.div(
-        { className: "wa-message wa-" + m.direction },
+        { className: "wa-message wa-" + m.direction + (m.origin == "history" ? " wa-history" : "") },
         quoted ? t.div({ className: "wa-quote txt-hint" }, quoted.text || "[" + quoted.type + "]") : void 0,
         m.mediaId ? mediaView(m) : void 0,
         m.template ? t.div({ className: "wa-template txt-hint" }, t.i({ className: "ri-file-list-3-line" }), " " + m.template.split("|")[0]) : void 0,
         m.text ? t.div({ className: "wa-text" }, m.text) : !m.mediaId && !m.template ? t.div({ className: "wa-text txt-hint" }, "[" + (m.type || "message") + "]") : void 0,
         t.div(
           { className: "wa-meta txt-hint", title: fullTime(m.sentAt || m.created) },
+          m.origin == "app" ? t.i({
+            className: "ri-smartphone-line",
+            ariaLabel: app.attrs.tooltip("Sent from the WhatsApp Business app", "left")
+          }) : void 0,
           shortTime(m.sentAt || m.created),
           m.direction == "out" && STATUS_ICONS[m.status] ? t.i({
             className: STATUS_ICONS[m.status] + " wa-status-" + m.status,

@@ -31,7 +31,10 @@ type fakeVelastack struct {
 	webhooks []map[string]any
 	sent     []map[string]any
 	read     []string
-	inbound  []map[string]any // what GET /messages?direction=in lists
+	inbound  []map[string]any // what GET /messages?conversation=1 lists
+	contacts []map[string]any // what GET /contacts lists
+	status   map[string]any   // what GET /status answers
+	queries  []string         // GET /messages query strings
 	statuses map[string]string
 }
 
@@ -58,12 +61,34 @@ func newFakeVelastack(t *testing.T) *fakeVelastack {
 	mux.HandleFunc("GET /messages", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		f.queries = append(f.queries, r.URL.RawQuery)
 		start := 0
 		if after := r.URL.Query().Get("after"); after != "" {
 			start, _ = strconv.Atoi(strings.TrimPrefix(after, "c"))
 		}
 		data := f.inbound[min(start, len(f.inbound)):]
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": data, "next": "c" + strconv.Itoa(len(f.inbound))})
+	})
+
+	mux.HandleFunc("GET /contacts", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		start := 0
+		if after := r.URL.Query().Get("after"); after != "" {
+			start, _ = strconv.Atoi(strings.TrimPrefix(after, "k"))
+		}
+		data := f.contacts[min(start, len(f.contacts)):]
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data, "next": "k" + strconv.Itoa(len(f.contacts))})
+	})
+
+	mux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		status := map[string]any{"ok": true, "message": ""}
+		for k, v := range f.status {
+			status[k] = v
+		}
+		_ = json.NewEncoder(w).Encode(status)
 	})
 
 	mux.HandleFunc("POST /messages", func(w http.ResponseWriter, r *http.Request) {
