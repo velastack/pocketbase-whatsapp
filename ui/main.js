@@ -172,7 +172,10 @@
       }
       data.isTesting = true;
       try {
-        await app.pb.send(API + "/test", { method: "POST", body: { phone: data.testPhone } });
+        await app.pb.send(API + "/test", {
+          method: "POST",
+          body: { phone: data.testPhone, lang: navigator.language }
+        });
         if (data.mode == "dev") {
           app.toasts.success("Test code for " + data.testPhone + " written to the app logs.");
         } else {
