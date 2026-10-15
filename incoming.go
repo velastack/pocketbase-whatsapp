@@ -22,12 +22,15 @@ import (
 // each incoming message as a signed `message.received` event. The plugin
 // registers its own webhook URL with VelaStack (`PUT {relay}/webhook`) when
 // the app URL is public https, and otherwise (eg. localhost) polls
-// `GET {relay}/messages?direction=in`. Both paths store the messages in the
+// `GET {relay}/messages?conversation=1`. Both paths store the messages in the
 // [CollectionNameContacts] and [CollectionNameMessages] collections, so apps
 // react to them with the usual record hooks (eg.
 // `app.OnRecordAfterCreateSuccess(whatsapp.CollectionNameMessages)`).
 //
 // Media stays at Meta and is fetched through VelaStack on request.
+//
+// A number also used in the WhatsApp Business app adds the owner's replies
+// from the app and the synced chat history; see coexistence.go.
 
 const (
 	// CollectionNameContacts is the name of the collection with the people
@@ -66,6 +69,14 @@ type incomingState struct {
 	Cursor   string `json:"cursor"`
 	Error    string `json:"error"`
 	SyncedAt string `json:"syncedAt"`
+	// CursorVersion is the listing Cursor belongs to; see [conversationCursorVersion].
+	CursorVersion  int    `json:"cursorVersion"`
+	ContactsCursor string `json:"contactsCursor"`
+	// OnBizApp: the number is also in the WhatsApp Business app (coexistence).
+	OnBizApp bool          `json:"onBizApp"`
+	History  *historyState `json:"history,omitempty"`
+	// StatusAt is when OnBizApp and History were last read from VelaStack.
+	StatusAt string `json:"statusAt"`
 }
 
 func (p *plugin) loadIncomingState(app core.App) (*incomingState, error) {
@@ -269,7 +280,11 @@ func (p *plugin) linkUser(txApp core.App, contact *core.Record) {
 
 // ingestInbound stores an incoming message once (by event and message id)
 // and updates its contact. It reports whether the message was new.
-func (p *plugin) ingestInbound(app core.App, eventID string, m inboundMessage) (bool, error) {
+//
+// A message from the synced history (origin [OriginHistory]) is neither
+// unread nor a reason to think the customer service window is open: Meta's
+// window only counts Cloud API conversations.
+func (p *plugin) ingestInbound(app core.App, eventID string, m inboundMessage, origin string) (bool, error) {
 	if m.MessageID == "" || m.From == "" {
 		return false, errors.New("incoming message without id or sender")
 	}
@@ -294,14 +309,16 @@ func (p *plugin) ingestInbound(app core.App, eventID string, m inboundMessage) (
 		if m.Name != "" {
 			contact.Set("name", m.Name)
 		}
-		if contact.GetDateTime("lastInbound").Time().Before(sentAt) {
+		if origin != OriginHistory && contact.GetDateTime("lastInbound").Time().Before(sentAt) {
 			contact.Set("lastInbound", sentAt)
 		}
 		if contact.GetDateTime("lastMessageAt").Time().Before(sentAt) {
 			contact.Set("lastMessageAt", sentAt)
 			contact.Set("lastMessage", text)
 		}
-		contact.Set("unread", contact.GetInt("unread")+1)
+		if origin != OriginHistory {
+			contact.Set("unread", contact.GetInt("unread")+1)
+		}
 		p.linkUser(txApp, contact)
 		if err := txApp.Save(contact); err != nil {
 			return err
@@ -316,6 +333,7 @@ func (p *plugin) ingestInbound(app core.App, eventID string, m inboundMessage) (
 		message.Load(map[string]any{
 			"contact":   contact.Id,
 			"direction": "in",
+			"origin":    origin,
 			"messageId": m.MessageID,
 			"eventId":   eventID,
 			"type":      m.Type,
@@ -453,7 +471,7 @@ func (p *plugin) handleEvent(app core.App, event forwardedEvent) error {
 		if err := json.Unmarshal(event.Data, &m); err != nil {
 			return err
 		}
-		_, err := p.ingestInbound(app, event.ID, m)
+		_, err := p.ingestInbound(app, event.ID, m, "")
 		return err
 	case "message.status":
 		u := statusUpdate{}
@@ -463,7 +481,8 @@ func (p *plugin) handleEvent(app core.App, event forwardedEvent) error {
 		return p.applyStatus(app, u)
 	default:
 		// webhook.test and the account/template events need nothing here
-		return nil
+		_, err := p.handleCoexistenceEvent(app, event)
+		return err
 	}
 }
 
@@ -479,11 +498,12 @@ func windowOpen(contact *core.Record, now time.Time) bool {
 
 // recentPendingOutbound returns the inbox messages whose delivery isn't
 // settled yet, to refresh while polling (webhooks deliver statuses instead).
+// Messages from the WhatsApp Business app aren't the inbox's sends.
 func recentPendingOutbound(app core.App, limit int) ([]*core.Record, error) {
 	since, _ := types.ParseDateTime(time.Now().Add(-customerServiceWindow))
 	return app.FindRecordsByFilter(
 		CollectionNameMessages,
-		"direction = 'out' && status != 'read' && status != 'failed' && created >= {:since}",
+		"direction = 'out' && origin = '' && status != 'read' && status != 'failed' && created >= {:since}",
 		"-created",
 		limit,
 		0,

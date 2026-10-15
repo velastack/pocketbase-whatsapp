@@ -18,7 +18,9 @@ import (
 // The VelaStack relay calls behind incoming messages and the inbox. They use
 // the same base url and project key as the code delivery ([RelayTransport]).
 //
-//	GET    {URL}/messages?direction=in&after=<cursor>&limit=   → {data: [...], next}
+//	GET    {URL}/messages?conversation=1&after=<cursor>&limit=  → {data: [...], next}
+//	GET    {URL}/contacts?after=<cursor>&limit=   → {data: [...], next}
+//	GET    {URL}/status                   → {ok, sender, onBizApp, history}
 //	POST   {URL}/messages                 (Cloud API message, Idempotency-Key) → 202 {messageId}
 //	GET    {URL}/messages/{messageId}     → message
 //	POST   {URL}/messages/{messageId}/read {typing?}
@@ -52,9 +54,12 @@ func keyID(apiKey string) string {
 
 type listedMessage struct {
 	inboundMessage
+	To        string `json:"to"`
 	Direction string `json:"direction"`
-	Status    string `json:"status"`
-	Error     string `json:"error"`
+	// Origin is empty or "api" for the Cloud API, else [OriginApp] or [OriginHistory].
+	Origin string `json:"origin"`
+	Status string `json:"status"`
+	Error  string `json:"error"`
 }
 
 type messagePage struct {
@@ -62,13 +67,46 @@ type messagePage struct {
 	Next string          `json:"next"`
 }
 
-func (t *RelayTransport) listInbound(ctx context.Context, after string, limit int) (*messagePage, error) {
-	q := url.Values{"direction": {"in"}, "limit": {strconv.Itoa(limit)}}
+// conversationCursorVersion changes when the listing the poll cursor walks
+// changes. Version 1 added the owner's app messages and the history
+// (`conversation=1` instead of `direction=in`), so the first poll after an
+// upgrade starts over and picks them up; message ids dedupe the rest.
+const conversationCursorVersion = 1
+
+// listConversation lists what an inbox shows: incoming messages, and on a
+// coexistence number what the owner sent from the app and the chat history.
+func (t *RelayTransport) listConversation(ctx context.Context, after string, limit int) (*messagePage, error) {
+	q := url.Values{"conversation": {"1"}, "limit": {strconv.Itoa(limit)}}
 	if after != "" {
 		q.Set("after", after)
 	}
 	page := &messagePage{}
 	return page, t.do(ctx, http.MethodGet, "/messages?"+q.Encode(), nil, nil, page)
+}
+
+type contactPage struct {
+	Data []syncedContact `json:"data"`
+	Next string          `json:"next"`
+}
+
+// listContacts lists the WhatsApp Business app's address book (coexistence).
+func (t *RelayTransport) listContacts(ctx context.Context, after string, limit int) (*contactPage, error) {
+	q := url.Values{"limit": {strconv.Itoa(limit)}}
+	if after != "" {
+		q.Set("after", after)
+	}
+	page := &contactPage{}
+	return page, t.do(ctx, http.MethodGet, "/contacts?"+q.Encode(), nil, nil, page)
+}
+
+type relayStatus struct {
+	OnBizApp bool          `json:"onBizApp"`
+	History  *historyState `json:"history"`
+}
+
+func (t *RelayTransport) coexistenceStatus(ctx context.Context) (*relayStatus, error) {
+	status := &relayStatus{}
+	return status, t.do(ctx, http.MethodGet, "/status", nil, nil, status)
 }
 
 func (t *RelayTransport) getMessage(ctx context.Context, messageID string) (*listedMessage, error) {
@@ -260,8 +298,13 @@ func (p *plugin) pollOnce(app core.App) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	if state.CursorVersion != conversationCursorVersion {
+		state.Cursor = ""
+		state.CursorVersion = conversationCursorVersion
+	}
+
 	for range 20 {
-		page, err := client.listInbound(ctx, state.Cursor, pollPageSize)
+		page, err := client.listConversation(ctx, state.Cursor, pollPageSize)
 		if err != nil {
 			var te *TransportError
 			// a cursor VelaStack no longer knows (eg. a new key): start over
@@ -272,8 +315,11 @@ func (p *plugin) pollOnce(app core.App) error {
 			return err
 		}
 		for _, m := range page.Data {
-			if _, err := p.ingestInbound(app, "", m.inboundMessage); err != nil {
-				app.Logger().Warn("Failed to store an incoming WhatsApp message", "messageId", m.MessageID, "error", err)
+			if m.Origin == "api" {
+				m.Origin = ""
+			}
+			if err := p.ingestConversation(app, "", m); err != nil {
+				app.Logger().Warn("Failed to store a WhatsApp message", "messageId", m.MessageID, "error", err)
 			}
 		}
 		if page.Next != "" && page.Next != state.Cursor {
@@ -286,6 +332,9 @@ func (p *plugin) pollOnce(app core.App) error {
 			break
 		}
 	}
+
+	p.pollContacts(ctx, app, client, state)
+	p.refreshStatus(ctx, app, client, state)
 
 	pending, err := recentPendingOutbound(app, 20)
 	if err != nil {
@@ -310,4 +359,55 @@ func (p *plugin) pollOnce(app core.App) error {
 	}
 
 	return nil
+}
+
+// pollContacts fetches the address book changes since the last poll. A
+// VelaStack without the contacts route (404) or a number not on the app
+// (empty list) needs nothing.
+func (p *plugin) pollContacts(ctx context.Context, app core.App, client *RelayTransport, state *incomingState) {
+	for range 20 {
+		page, err := client.listContacts(ctx, state.ContactsCursor, pollPageSize)
+		if err != nil {
+			var te *TransportError
+			if errors.As(err, &te) && te.Code == "invalid_request" && state.ContactsCursor != "" {
+				state.ContactsCursor = ""
+				continue
+			}
+			app.Logger().Debug("Failed to poll WhatsApp contacts", "error", err)
+			return
+		}
+		for _, c := range page.Data {
+			if err := p.applySavedName(app, c); err != nil {
+				app.Logger().Warn("Failed to store a WhatsApp contact name", "error", err)
+			}
+		}
+		if page.Next != "" && page.Next != state.ContactsCursor {
+			state.ContactsCursor = page.Next
+			if err := p.saveIncomingState(app, state); err != nil {
+				return
+			}
+		}
+		if len(page.Data) < pollPageSize {
+			return
+		}
+	}
+}
+
+// refreshStatus re-reads, now and then, whether the number is on the
+// WhatsApp Business app and how far its history import is.
+func (p *plugin) refreshStatus(ctx context.Context, app core.App, client *RelayTransport, state *incomingState) {
+	if at, err := time.Parse(time.RFC3339, state.StatusAt); err == nil && time.Since(at) < statusRefreshEvery {
+		return
+	}
+	status, err := client.coexistenceStatus(ctx)
+	if err != nil {
+		app.Logger().Debug("Failed to read the WhatsApp sender status", "error", err)
+		return
+	}
+	state.OnBizApp = status.OnBizApp
+	if status.History != nil {
+		state.History = status.History
+	}
+	state.StatusAt = time.Now().UTC().Format(time.RFC3339)
+	_ = p.saveIncomingState(app, state)
 }

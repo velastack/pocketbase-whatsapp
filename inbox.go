@@ -51,9 +51,11 @@ func (p *plugin) receiveWebhook(e *core.RequestEvent) error {
 // -------------------------------------------------------------------
 
 type inboxContact struct {
-	Id             string `json:"id"`
-	Phone          string `json:"phone"`
-	Name           string `json:"name"`
+	Id    string `json:"id"`
+	Phone string `json:"phone"`
+	Name  string `json:"name"`
+	// SavedName is the name in the WhatsApp Business app's address book.
+	SavedName      string `json:"savedName"`
 	UserCollection string `json:"userCollection"`
 	User           string `json:"user"`
 	LastMessage    string `json:"lastMessage"`
@@ -75,6 +77,7 @@ func toInboxContact(app core.App, r *core.Record, now time.Time) inboxContact {
 		Id:             r.Id,
 		Phone:          r.GetString("phone"),
 		Name:           r.GetString("name"),
+		SavedName:      r.GetString("savedName"),
 		UserCollection: userCollection,
 		User:           r.GetString("user"),
 		LastMessage:    r.GetString("lastMessage"),
@@ -94,7 +97,8 @@ func (p *plugin) inboxContacts(e *core.RequestEvent) error {
 		return e.InternalServerError("", err)
 	}
 
-	records, err := e.App.FindRecordsByFilter(CollectionNameContacts, "", "-lastMessageAt", inboxContactsLimit, 0)
+	// address book entries without a conversation stay out of the list
+	records, err := e.App.FindRecordsByFilter(CollectionNameContacts, "lastMessageAt != ''", "-lastMessageAt", inboxContactsLimit, 0)
 	if err != nil {
 		return e.InternalServerError("", err)
 	}
@@ -110,6 +114,8 @@ func (p *plugin) inboxContacts(e *core.RequestEvent) error {
 			"mode":       state.Mode,
 			"webhookURL": state.WebhookURL,
 			"error":      state.Error,
+			"onBizApp":   state.OnBizApp,
+			"history":    state.History,
 		},
 		"contacts": contacts,
 	})
@@ -124,11 +130,12 @@ func (p *plugin) inboxThread(e *core.RequestEvent) error {
 		return e.NotFoundError("", err)
 	}
 
-	// the newest messages, shown oldest first
+	// the newest messages, shown oldest first; by when they were sent, since
+	// the synced history is stored long after
 	records, err := e.App.FindRecordsByFilter(
 		CollectionNameMessages,
 		"contact = {:contact}",
-		"-created",
+		"-sentAt,-created",
 		inboxThreadLimit,
 		0,
 		map[string]any{"contact": contact.Id},
@@ -142,6 +149,7 @@ func (p *plugin) inboxThread(e *core.RequestEvent) error {
 		messages = append(messages, map[string]any{
 			"id":        r.Id,
 			"direction": r.GetString("direction"),
+			"origin":    r.GetString("origin"),
 			"messageId": r.GetString("messageId"),
 			"type":      r.GetString("type"),
 			"text":      r.GetString("text"),
@@ -181,7 +189,7 @@ func (p *plugin) inboxRead(e *core.RequestEvent) error {
 	// blue ticks for the customer, best effort
 	latest, _ := e.App.FindRecordsByFilter(
 		CollectionNameMessages,
-		"contact = {:contact} && direction = 'in'",
+		"contact = {:contact} && direction = 'in' && origin = ''",
 		"-created",
 		1,
 		0,
