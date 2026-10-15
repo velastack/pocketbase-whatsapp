@@ -36,6 +36,9 @@ type fakeVelastack struct {
 	status   map[string]any   // what GET /status answers
 	queries  []string         // GET /messages query strings
 	statuses map[string]string
+	// webhookFail answers the next PUT /webhook calls with these statuses
+	// and a body that isn't JSON, as a proxy in front of VelaStack would.
+	webhookFail []int
 }
 
 func newFakeVelastack(t *testing.T) *fakeVelastack {
@@ -49,6 +52,12 @@ func newFakeVelastack(t *testing.T) *fakeVelastack {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if len(f.webhookFail) > 0 {
+			status := f.webhookFail[0]
+			f.webhookFail = f.webhookFail[1:]
+			http.Error(w, http.StatusText(status), status)
+			return
+		}
 		f.webhooks = append(f.webhooks, body)
 		result := map[string]any{"url": body["url"]}
 		if f.secret == "" || body["rotate"] == true {
@@ -540,5 +549,73 @@ func TestIncomingWebhookModeStillPolls(t *testing.T) {
 	messages, _ := env.app.FindAllRecords(CollectionNameMessages)
 	if len(messages) != 1 {
 		t.Fatalf("Expected 1 message, got %d", len(messages))
+	}
+}
+
+func TestIncomingRegistrationRetry(t *testing.T) {
+	env, fake := newIncomingEnv(t, "https://app.example.com")
+
+	// eg. a deploy starts PocketBase while VelaStack, behind the same proxy, is down
+	fake.mu.Lock()
+	fake.webhookFail = []int{http.StatusBadGateway, http.StatusBadGateway}
+	fake.mu.Unlock()
+
+	if err := env.plugin.syncIncoming(env.app); err != nil {
+		t.Fatal(err)
+	}
+	state, _ := env.plugin.loadIncomingState(env.app)
+	if state.Mode != IncomingPolling || !strings.Contains(state.Error, "502") {
+		t.Fatalf("Expected polling with the error, got %+v", state)
+	}
+
+	now := time.Now()
+	if env.plugin.registrationDue(now) {
+		t.Fatal("Expected the retry to wait")
+	}
+	if !env.plugin.registrationDue(now.Add(registerRetryMin)) {
+		t.Fatal("Expected a retry after registerRetryMin")
+	}
+
+	// a second failure waits longer
+	if err := env.plugin.syncIncoming(env.app); err != nil {
+		t.Fatal(err)
+	}
+	if env.plugin.registrationDue(time.Now().Add(registerRetryMin)) || !env.plugin.registrationDue(time.Now().Add(2*registerRetryMin)) {
+		t.Fatal("Expected the wait to double")
+	}
+
+	// VelaStack is back
+	if err := env.plugin.syncIncoming(env.app); err != nil {
+		t.Fatal(err)
+	}
+	state, _ = env.plugin.loadIncomingState(env.app)
+	if state.Mode != IncomingWebhook || state.Error != "" || state.Secret != fake.secret {
+		t.Fatalf("Expected webhook mode, got %+v", state)
+	}
+	if env.plugin.registrationDue(time.Now().Add(time.Hour)) {
+		t.Fatal("Expected nothing left to retry")
+	}
+	if res := env.postEvent(fake.secret, receivedEvent("evt_1", "wamid.IN1", testContactPhone, "Hola")); res.status != http.StatusNoContent {
+		t.Fatalf("Expected the new secret to verify, got %d", res.status)
+	}
+}
+
+func TestIncomingRegistrationNoRetry(t *testing.T) {
+	env, fake := newIncomingEnv(t, "https://app.example.com")
+
+	// a revoked key won't start working by asking again
+	fake.mu.Lock()
+	fake.webhookFail = []int{http.StatusUnauthorized}
+	fake.mu.Unlock()
+
+	if err := env.plugin.syncIncoming(env.app); err != nil {
+		t.Fatal(err)
+	}
+	state, _ := env.plugin.loadIncomingState(env.app)
+	if state.Mode != IncomingPolling || state.Error == "" {
+		t.Fatalf("Expected polling with the error, got %+v", state)
+	}
+	if env.plugin.registrationDue(time.Now().Add(time.Hour)) {
+		t.Fatal("Expected no retry for an unauthorized key")
 	}
 }

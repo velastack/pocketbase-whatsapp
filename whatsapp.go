@@ -66,6 +66,11 @@ type plugin struct {
 
 	// incomingMu serializes the webhook registration and the polling.
 	incomingMu sync.Mutex
+	// registerRetryAt is when a webhook registration that failed for a
+	// moment is tried again (zero: nothing to retry), registerRetryDelay
+	// the last wait. Both are guarded by incomingMu.
+	registerRetryAt    time.Time
+	registerRetryDelay time.Duration
 }
 
 // MustRegister registers the whatsapp plugin in the provided app instance
@@ -235,14 +240,19 @@ func (p *plugin) startIncoming(app core.App) {
 			case <-done:
 				return
 			case <-ticker.C:
-				// with webhooks, only a slow safety net (see pollOnce)
 				tick++
-				if p.incomingMode(app) == IncomingWebhook && tick%webhookPollEvery != 0 {
-					continue
-				}
 				// waits, so polls never overlap
 				var wg sync.WaitGroup
 				routine.FireAndForget(func() {
+					if p.registrationDue(time.Now()) {
+						if err := p.syncIncoming(app); err != nil {
+							app.Logger().Warn("Failed to set up incoming WhatsApp messages", "error", err)
+						}
+					}
+					// with webhooks, only a slow safety net (see pollOnce)
+					if p.incomingMode(app) == IncomingWebhook && tick%webhookPollEvery != 0 {
+						return
+					}
 					if err := p.pollOnce(app); err != nil {
 						app.Logger().Debug("Failed to poll incoming WhatsApp messages", "error", err)
 					}

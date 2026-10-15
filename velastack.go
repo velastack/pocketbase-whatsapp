@@ -222,6 +222,9 @@ func (p *plugin) syncIncoming(app core.App) error {
 	p.incomingMu.Lock()
 	defer p.incomingMu.Unlock()
 
+	// this run replaces any pending retry
+	p.registerRetryAt = time.Time{}
+
 	state, err := p.loadIncomingState(app)
 	if err != nil {
 		return err
@@ -263,6 +266,10 @@ func (p *plugin) syncIncoming(app core.App) error {
 			// keep receiving by polling until the webhook can be registered
 			state.Mode = IncomingPolling
 			state.Error = "Couldn't register the webhook with VelaStack: " + err.Error()
+			if retryableRegistration(err) {
+				p.registerRetryDelay = min(max(2*p.registerRetryDelay, registerRetryMin), registerRetryMax)
+				p.registerRetryAt = time.Now().Add(p.registerRetryDelay)
+			}
 			break
 		}
 		state.Secret = info.Secret
@@ -271,7 +278,38 @@ func (p *plugin) syncIncoming(app core.App) error {
 		state.WebhookURL = webhookURL
 	}
 
+	if p.registerRetryAt.IsZero() {
+		p.registerRetryDelay = 0
+	}
+
 	return p.saveIncomingState(app, state)
+}
+
+// Waits before registering the webhook again after a failure that may pass,
+// doubling from registerRetryMin.
+const (
+	registerRetryMin = 15 * time.Second
+	registerRetryMax = 5 * time.Minute
+)
+
+// retryableRegistration reports whether a failed webhook registration may
+// work later: VelaStack (or a proxy in front of it) was briefly unavailable
+// or busy. When VelaStack runs behind the same proxy as this app, a deploy
+// starts PocketBase before the app, so the registration at startup gets a 502.
+func retryableRegistration(err error) bool {
+	var te *TransportError
+	if !errors.As(err, &te) {
+		return false
+	}
+	return te.Code == ErrCodeUnavailable || te.Code == ErrCodeRateLimited
+}
+
+// registrationDue reports whether a failed webhook registration should be
+// tried again.
+func (p *plugin) registrationDue(now time.Time) bool {
+	p.incomingMu.Lock()
+	defer p.incomingMu.Unlock()
+	return !p.registerRetryAt.IsZero() && !now.Before(p.registerRetryAt)
 }
 
 const pollPageSize = 100
