@@ -225,7 +225,11 @@ function pageWhatsAppSettings() {
         data.isTesting = true;
 
         try {
-            await app.pb.send(API + "/test", { method: "POST", body: { phone: data.testPhone } });
+            // send the test code in the admin's own language when the template is approved in it
+            await app.pb.send(API + "/test", {
+                method: "POST",
+                body: { phone: data.testPhone, lang: navigator.language },
+            });
             if (data.mode == "dev") {
                 app.toasts.success("Test code for " + data.testPhone + " written to the app logs.");
             } else {
