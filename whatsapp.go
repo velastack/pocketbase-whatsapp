@@ -26,6 +26,7 @@ import (
 	"io/fs"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pocketbase/dbx"
@@ -71,6 +72,10 @@ type plugin struct {
 	// the last wait. Both are guarded by incomingMu.
 	registerRetryAt    time.Time
 	registerRetryDelay time.Duration
+
+	// incoming is the last loaded or saved incoming mode, so the poller
+	// doesn't read the store on every tick (nil until it is first known).
+	incoming atomic.Pointer[string]
 }
 
 // MustRegister registers the whatsapp plugin in the provided app instance
@@ -208,7 +213,11 @@ func (p *plugin) bindRoutes(se *core.ServeEvent) {
 // polls while VelaStack delivers webhooks.
 const webhookPollEvery = 6
 
+// incomingMode returns the incoming mode, from memory once it's known.
 func (p *plugin) incomingMode(app core.App) string {
+	if mode := p.incoming.Load(); mode != nil {
+		return *mode
+	}
 	state, err := p.loadIncomingState(app)
 	if err != nil {
 		return IncomingOff
@@ -250,7 +259,10 @@ func (p *plugin) startIncoming(app core.App) {
 						}
 					}
 					// with webhooks, only a slow safety net (see pollOnce)
-					if p.incomingMode(app) == IncomingWebhook && tick%webhookPollEvery != 0 {
+					switch mode := p.incomingMode(app); {
+					case mode == IncomingOff:
+						return
+					case mode == IncomingWebhook && tick%webhookPollEvery != 0:
 						return
 					}
 					if err := p.pollOnce(app); err != nil {
