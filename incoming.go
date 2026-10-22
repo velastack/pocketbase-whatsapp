@@ -84,11 +84,18 @@ func (p *plugin) loadIncomingState(app core.App) (*incomingState, error) {
 	if _, err := p.loadStoreValue(app, storeKeyIncoming, s); err != nil {
 		return nil, err
 	}
+	mode := s.Mode
+	p.incoming.Store(&mode)
 	return s, nil
 }
 
 func (p *plugin) saveIncomingState(app core.App, s *incomingState) error {
-	return p.saveStoreValue(app, storeKeyIncoming, s, true)
+	if err := p.saveStoreValue(app, storeKeyIncoming, s, true); err != nil {
+		return err
+	}
+	mode := s.Mode
+	p.incoming.Store(&mode)
+	return nil
 }
 
 // -------------------------------------------------------------------
