@@ -1,8 +1,8 @@
 package whatsapp
 
 import (
-	validation "github.com/pocketbase/ozzo-validation/v4"
-	"github.com/pocketbase/pocketbase/core"
+	validation "ganigeorgiev.com/pocketbase/ozzo-validation/v4"
+	"ganigeorgiev.com/pocketbase/pocketbase/core"
 )
 
 // guardPhoneFields rejects non-superuser writes to the configured

@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/pocketbase/pocketbase/core"
+	"ganigeorgiev.com/pocketbase/pocketbase/core"
 )
 
 // DevTransport is a development transport that only logs the auth codes
