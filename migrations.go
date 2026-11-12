@@ -3,7 +3,7 @@ package whatsapp
 import (
 	"sync"
 
-	"github.com/pocketbase/pocketbase/core"
+	"ganigeorgiev.com/pocketbase/pocketbase/core"
 )
 
 const (

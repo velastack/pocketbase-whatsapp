@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/pocketbase/pocketbase/core"
+	"ganigeorgiev.com/pocketbase/pocketbase/core"
 )
 
 // Coexistence: a number that stays in the WhatsApp Business app on the

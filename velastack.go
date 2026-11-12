@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pocketbase/pocketbase/core"
+	"ganigeorgiev.com/pocketbase/pocketbase/core"
 )
 
 // The VelaStack relay calls behind incoming messages and the inbox. They use

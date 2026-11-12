@@ -171,7 +171,7 @@ go test ./...
 npm install && npm run build   # after changing web/ (the built ui/ is committed)
 # against a local PocketBase checkout: create a go.work (gitignored) with
 #   use .
-#   replace github.com/pocketbase/pocketbase => ../pocketbase
+#   replace ganigeorgiev.com/pocketbase/pocketbase => ../pocketbase
 go run ./examples/base serve --dev
 ```
 
