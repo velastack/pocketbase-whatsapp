@@ -8,6 +8,14 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  # By hand, from the default branch: tags it as the given version and
+  # releases that. For when pushing a tag is not possible.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The version to release, as a tag (v1.2.3)
+        type: string
+        required: true
 
 permissions:
   contents: write
@@ -22,18 +30,52 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+
+      # A pushed tag starts this run with the tag as its ref. Started by hand, the
+      # tag is the one asked for: it must not exist yet, and is pushed once the
+      # tests have passed.
+      - name: Resolve the release tag
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]; then
+              echo "Run this from $DEFAULT_BRANCH, not $GITHUB_REF_NAME"
+              exit 1
+            fi
+            if ! printf '%s' "$INPUT_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+              echo "\"$INPUT_TAG\" is not a version tag like v1.2.3"
+              exit 1
+            fi
+            if git rev-parse -q --verify "refs/tags/$INPUT_TAG" > /dev/null; then
+              echo "$INPUT_TAG is already released"
+              exit 1
+            fi
+            TAG="$INPUT_TAG"
+          else
+            TAG="$GITHUB_REF_NAME"
+          fi
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+
       - run: go vet ./...
       - run: go test -race ./...
+
+      - name: Push the tag
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git tag "$RELEASE_TAG"
+          git push origin "$RELEASE_TAG"
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           prerelease=""
-          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes $prerelease
+          case "$RELEASE_TAG" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$RELEASE_TAG" --verify-tag --generate-notes $prerelease
 
       - name: Warm the Go module proxy
         run: |
           module="$(go list -m)"
-          curl -fsS "https://proxy.golang.org/${module}/@v/${GITHUB_REF_NAME}.info"
+          curl -fsS "https://proxy.golang.org/${module}/@v/${RELEASE_TAG}.info"
